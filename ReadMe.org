@@ -1,0 +1,8 @@
+** Description
+
+This project involves creating an LLVM pass that uses dataflow
+analysis to compute anticipated expressions. Based on this
+information, the pass performs code hoisting to minimize code size and
+avoid repeated evaluation of expressions. The implementation will be
+validated by checking whether anticipated expressions have been
+successfully removed from the IR.
