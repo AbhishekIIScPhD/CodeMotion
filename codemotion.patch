@@ -1,0 +1,2018 @@
+From dbc532d402f4b102ad807de8e68ab9b4abcd4233 Mon Sep 17 00:00:00 2001
+From: Abhishek Uppar <abhisheku@iisc.ac.in>
+Date: Thu, 13 Apr 2023 20:19:13 +0530
+Subject: [PATCH] E0255 Assignment final Changes
+
+---
+ llvm/include/llvm/Transforms/E0255_CM/CM.h  |  163 ++
+ llvm/lib/Transforms/CMakeLists.txt          |    1 +
+ llvm/lib/Transforms/E0255_CM/CM.cpp         | 1776 +++++++++++++++++++
+ llvm/lib/Transforms/E0255_CM/CMakeLists.txt |   11 +
+ llvm/lib/Transforms/E0255_CM/README.txt     |   11 +
+ 5 files changed, 1962 insertions(+)
+ create mode 100644 llvm/include/llvm/Transforms/E0255_CM/CM.h
+ create mode 100644 llvm/lib/Transforms/E0255_CM/CM.cpp
+ create mode 100644 llvm/lib/Transforms/E0255_CM/CMakeLists.txt
+ create mode 100644 llvm/lib/Transforms/E0255_CM/README.txt
+
+diff --git a/llvm/include/llvm/Transforms/E0255_CM/CM.h b/llvm/include/llvm/Transforms/E0255_CM/CM.h
+new file mode 100644
+index 000000000000..f8f6f2e9510a
+--- /dev/null
++++ b/llvm/include/llvm/Transforms/E0255_CM/CM.h
+@@ -0,0 +1,163 @@
++#include "llvm/ADT/BitVector.h"
++#include "llvm/ADT/SetVector.h"
++#include "llvm/ADT/SmallVector.h"
++#include "llvm/IR/BasicBlock.h"
++#include "llvm/IR/Function.h"
++#include "llvm/IR/Instruction.h"
++#include "llvm/IR/PassManager.h"
++#include "llvm/Pass.h"
++#include <map>
++#include <vector>
++
++namespace llvm {
++class CodeMotionPass;
++
++class AnalysisInfo {
++protected:
++  BitVector In;
++  BitVector Out;
++
++public:
++  AnalysisInfo(size_t Bsize);
++  BitVector &getIn();
++  BitVector &getOut();
++};
++
++class AntExp : public AnalysisInfo {
++public:
++  AntExp(size_t Bsize) : AnalysisInfo(Bsize) {}
++  void initState();
++  void dump();
++};
++
++class AvailExp : public AnalysisInfo {
++public:
++  AvailExp(size_t Bsize) : AnalysisInfo(Bsize) {}
++  void initState();
++  void dump();
++};
++
++class Earliest {
++private:
++  BitVector E;
++
++public:
++  Earliest(size_t Bsize);
++  void initState();
++  BitVector &getS();
++  void dump();
++};
++
++// expression representation for bitvector analysis
++class Exp {
++private:
++  BasicBlock *BB;
++  Instruction *Inst;
++  bool IgnoreCM = true;
++  BitVector Uses;
++  unsigned int Opcode;
++  unsigned int Arity;
++  SmallVector<Value *, 10> Operands;
++  bool checkExprForCM(Instruction &I);
++
++public:
++  Exp(BasicBlock &BB, Instruction &I);
++  // identity transfer function for such instructions
++  bool isIgnored() { return IgnoreCM; }
++  bool isEqual(Exp Eb, const BitVector &Related,
++               std::map<Instruction *, int> &IE);
++  BasicBlock *getBasicBlock() { return BB; }
++  BitVector &getUses() { return Uses; }
++  void dump();
++};
++
++// per node information built by the analyses
++class NodeAnalysisInfo {
++private:
++  AntExp *AntExpDFF = nullptr;
++  AvailExp *AvailExpDFF = nullptr;
++  Earliest *EarliestDFF = nullptr;
++  BasicBlock *BB = nullptr;
++  Instruction *Instr = nullptr;
++  bool IsEntry = false;
++  bool IsExit = false;
++  Exp *Expr;
++  bool setIsEntry(BasicBlock &BB);
++  bool setIsExit(BasicBlock &BB);
++  void dumpBVExpr(const BitVector &BV);
++
++public:
++  NodeAnalysisInfo(Function &F, BasicBlock &BB);
++  NodeAnalysisInfo(Function &F, Instruction &I);
++  AntExp *getAntExpDFF() { return this->AntExpDFF; }
++  AvailExp *getAvailExpDFF() { return this->AvailExpDFF; }
++  Earliest *getEarliestDFF() { return this->EarliestDFF; }
++  BasicBlock *getBasicBlock() { return this->BB; }
++  bool getIsEntry() { return this->IsEntry; }
++  bool getIsExit() { return this->IsExit; }
++  Exp *getExp() { return this->Expr; }
++  void setExp(Exp *Expr) { this->Expr = Expr; }
++  void dumpAntExp(std::map<int, Instruction *> &II);
++  void dumpAvailExp(std::map<int, Instruction *> &II);
++  void dumpEarlPlac(std::map<int, Instruction *> &II);
++  void dumpPostExp(std::map<int, Instruction *> &II);
++  void dumpLatePlac(std::map<int, Instruction *> &II);
++  void dumpUsedExp(std::map<int, Instruction *> &II);
++  ~NodeAnalysisInfo();
++};
++
++class CodeMotionPass : public FunctionPass {
++private:
++  std::unordered_map<BasicBlock *, NodeAnalysisInfo *> BBInfo;
++  std::unordered_map<Instruction *, NodeAnalysisInfo *> InstInfo;
++  // a uniform representation for instructions
++  std::unordered_map<Instruction *, Exp *> Inst2Expr;
++  std::map<Instruction *, int> IE; // Basic block enumerator
++  std::map<int, Instruction *> II; // Index for Basic Block
++  std::vector<SetVector<int>> RS;
++  std::map<int, int> RI;
++  std::vector<Exp *> Inst4CM;
++  BitVector RelatedI;
++  // BasicBlock *EntryBB;
++
++  void transformCFG(Function &);
++  void buildCFGData(Function &);
++  void buildExpMap(Function &);
++  void buildRelatedExpr(Function &F);
++  void initCFGNodeState(Function &);
++  void performAntExpDfa(Function &F);
++  void performAvailExpDfa(Function &F);
++  void performEarlPlacDfa(Function &F);
++  void performPostExpDfa(Function &F);
++  void performLatePlacDfa(Function &F);
++  void performUsedExpDfa(Function &F);
++  void performCodeMotion(Function &F);
++  bool doFunctionPass(Function &F);
++  void retainRelatedExpr(BitVector &A, BitVector &B);
++  std::map<BasicBlock *, int> getBBE();
++  std::map<int, BasicBlock *> getIBB();
++
++public:
++  static char ID;
++  CodeMotionPass() : FunctionPass(ID) {}
++  void collectInstForMotion(Function &F);
++  void dumpCFG(Function &F);
++  void dumpExprMap();
++  void dumpBBInfoMap();
++  void dumpInstInfoMap();
++  void dumpIE();
++  void dumpCFGData(Function &F);
++  void dumpCFGNodeState(Function &F);
++  void dumpRelatedExp(Function &F);
++  void dumpAntExpCFGState();
++  void dumpAvailExpCFGState();
++  void dumpEarlPlacCFGState();
++  void dumpPostExpCFGState();
++  void dumpLatePlacCFGState();
++  void dumpUsedExpCFGState();
++  void dumpBitVector(BitVector &B);
++  bool runOnFunction(Function &F) override;
++  void deleteData();
++};
++
++} // namespace llvm
+\ No newline at end of file
+diff --git a/llvm/lib/Transforms/CMakeLists.txt b/llvm/lib/Transforms/CMakeLists.txt
+index dda5f6de11e3..b7c6cdafae08 100644
+--- a/llvm/lib/Transforms/CMakeLists.txt
++++ b/llvm/lib/Transforms/CMakeLists.txt
+@@ -9,3 +9,4 @@ add_subdirectory(Hello)
+ add_subdirectory(ObjCARC)
+ add_subdirectory(Coroutines)
+ add_subdirectory(CFGuard)
++add_subdirectory(E0255_CM)
+diff --git a/llvm/lib/Transforms/E0255_CM/CM.cpp b/llvm/lib/Transforms/E0255_CM/CM.cpp
+new file mode 100644
+index 000000000000..31127a196207
+--- /dev/null
++++ b/llvm/lib/Transforms/E0255_CM/CM.cpp
+@@ -0,0 +1,1776 @@
++#include "llvm/Transforms/E0255_CM/CM.h"
++#include "llvm/ADT/BitVector.h"
++#include "llvm/ADT/PostOrderIterator.h"
++#include "llvm/ADT/STLExtras.h"
++#include "llvm/ADT/SetVector.h"
++#include "llvm/ADT/Uniformity.h"
++#include "llvm/Analysis/ValueTracking.h"
++#include "llvm/IR/BasicBlock.h"
++#include "llvm/IR/CFG.h"
++#include "llvm/IR/Constant.h"
++#include "llvm/IR/Dominators.h"
++#include "llvm/IR/Function.h"
++#include "llvm/IR/IRBuilder.h"
++#include "llvm/IR/Instruction.h"
++#include "llvm/IR/Instructions.h"
++#include "llvm/IR/Value.h"
++#include "llvm/Pass.h"
++#include "llvm/ProfileData/InstrProfCorrelator.h"
++#include "llvm/Support/Casting.h"
++#include "llvm/Support/Debug.h"
++#include "llvm/Transforms/Utils/BasicBlockUtils.h"
++#include <queue>
++#include <utility>
++#include <vector>
++
++/* This file contains the implementation of code motion */
++
++#define DEBUG_TYPE "hae"
++// #define FUNENET
++// #define PRESENT
++// #define ALL
++// #define EXTRA
++// #define FUNENET
++// #define INFO
++// #define ANTEXP
++// #define AVAIL_EXP
++// static constexpr auto TAG = "[" DEBUG_TYPE "]";
++
++namespace llvm {
++AnalysisInfo::AnalysisInfo(size_t Bsize) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "AI::AI - BEGIN\n");
++#endif
++  // bits initialised to false
++  this->In.resize(Bsize);
++  this->Out.resize(Bsize);
++#ifdef INFO
++  LLVM_DEBUG(dbgs() << " Size : In " << this->In.size() << " Size : Out "
++                    << this->Out.size() << "\n");
++#endif
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "AI::AI - END\n");
++#endif
++}
++
++BitVector &AnalysisInfo::getIn() { return this->In; }
++BitVector &AnalysisInfo::getOut() { return this->Out; }
++
++void AntExp::initState() {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "AntExp::initPass - BEGIN\n");
++#endif
++  this->getIn().set();
++  this->getOut().set();
++#ifdef INFO
++  LLVM_DEBUG(dbgs() << "AntExp::dump - In size " << this->getIn().size() << "\n"
++                    << "AntExp:: dump - Out size " << this->getOut().size()
++                    << "\n");
++#endif
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "AntExp::initPass - END\n");
++#endif
++}
++
++void AntExp::dump() {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "AntExp::dump - BEGIN\n");
++#endif
++  BitVector &In = this->getIn();
++  BitVector &Out = this->getOut();
++
++  size_t Insize = In.size();
++  size_t Outsize = Out.size();
++
++  LLVM_DEBUG(dbgs() << "AntExp::dump - In size " << Insize << "\n"
++                    << "AntExp:: dump - Out size " << Outsize << "\n");
++
++  if (Insize != 0 || Outsize != 0) {
++    for (unsigned int Index = 0; Index < Insize; Index++) {
++      LLVM_DEBUG(dbgs() << " AntExp::dump - In Index " << Index << " Value "
++                        << In[Index] << " AntExp::dump - Out Index " << Index
++                        << " Value " << Out[Index] << "\n");
++    }
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "AntExp::dump - END\n");
++#endif
++}
++
++void AvailExp::initState() {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "AvailExp::initPass - BEGIN\n");
++#endif
++  this->getOut().set();
++  this->getIn().set();
++#ifdef INFO
++  LLVM_DEBUG(
++      dbgs() << "AvailExp::dump - In size " << this->getIn().size() << "\n"
++             << "AvailExp:: dump - Out size " << this->getOut().size() << "\n");
++#endif
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "AvailExp::initPass - END\n");
++#endif
++}
++
++void AvailExp::dump() {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "AvailExp::dump - BEGIN\n");
++#endif
++  BitVector &In = this->getIn();
++  BitVector &Out = this->getOut();
++  size_t Insize = In.size();
++  size_t Outsize = Out.size();
++
++  LLVM_DEBUG(dbgs() << "AvailExp:: dump - In size " << In.size() << "\n"
++                    << "AvailExp:: dump - Out size " << Out.size() << "\n");
++  if (Insize != 0 || Outsize != 0) {
++    for (unsigned int Index = 0; Index < Insize; Index++) {
++      LLVM_DEBUG(dbgs() << " AvailExp::dump - In Index " << Index << " Value "
++                        << In[Index] << " AvailExp::dump - Out Index " << Index
++                        << " Value " << Out[Index] << "\n");
++    }
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "AvailExp::dump - BEGIN\n");
++#endif
++}
++
++Earliest::Earliest(size_t Bsize) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "Earliest::Earliest - BEGIN\n");
++#endif
++  this->E.resize(Bsize);
++#ifdef INFO
++  LLVM_DEBUG(dbgs() << "Earliest::dump - State " << this->getS().size()
++                    << "\n");
++#endif
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "Earliest::Earliest - END\n");
++#endif
++}
++
++void Earliest::dump() {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "Earliest::dump - BEGIN\n");
++#endif
++  BitVector &State = this->getS();
++  size_t Ssize = State.size();
++
++  LLVM_DEBUG(dbgs() << "Earliest:: dump - size " << Ssize << "\n");
++  if (Ssize != 0) {
++    for (unsigned int Index = 0; Index < State.size(); Index++) {
++      LLVM_DEBUG(dbgs() << "Earliest::dump - State Index " << Index << " Value "
++                        << State[Index] << "\n");
++    }
++  }
++
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "Earliest::dump - END\n");
++#endif
++}
++
++BitVector &Earliest::getS() { return E; }
++
++NodeAnalysisInfo::NodeAnalysisInfo(Function &F, BasicBlock &BB) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "NAI BB - BEGIN\n");
++#endif
++  const unsigned BVSize = F.getInstructionCount();
++  setIsEntry(BB);
++  setIsExit(BB);
++  this->BB = &BB;
++  this->AntExpDFF = new AntExp(BVSize);
++  this->AvailExpDFF = new AvailExp(BVSize);
++  this->EarliestDFF = new Earliest(BVSize);
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "NAI BB - END\n");
++#endif
++}
++
++NodeAnalysisInfo::NodeAnalysisInfo(Function &F, Instruction &Inst) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "NAI Inst - BEGIN\n");
++#endif
++  const unsigned BVSize = F.getInstructionCount();
++  this->BB = Inst.getParent();
++  this->AntExpDFF = new AntExp(BVSize);
++  this->AvailExpDFF = new AvailExp(BVSize);
++  this->EarliestDFF = new Earliest(BVSize);
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "NAI Inst - END\n");
++#endif
++}
++
++bool NodeAnalysisInfo::setIsEntry(BasicBlock &BB) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "NAI::setIsEntry - BEGIN\n");
++#endif
++  bool Ret = false;
++  if (BB.hasNPredecessors(0)) {
++    this->IsEntry = true;
++    Ret = true;
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "NAI::setIsEntry - END\n");
++#endif
++  return Ret;
++}
++
++bool NodeAnalysisInfo::setIsExit(BasicBlock &BB) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "NAI::setIsExit - BEGIN\n");
++#endif
++  bool Ret = false;
++  auto &EndInst = BB.back();
++  if (EndInst.getNumSuccessors() == 0) {
++    this->IsExit = true;
++    Ret = true;
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "NAI::setIsExit - END\n");
++#endif
++  return Ret;
++}
++
++void NodeAnalysisInfo::dumpAntExp(std::map<int, Instruction *> &II) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "NAI::dumpAntExp - BEGIN\n");
++#endif
++  LLVM_DEBUG({
++    dbgs() << "NAI::dumpAntExp : IsEntry " << this->IsEntry << "\n"
++           << "NAI::dumpAntExp : IsExit " << this->IsExit << "\n";
++    // << "NAI::dumpAntExp : BasicBlock \n";
++    // this->BB->dump();
++    // this->AntExpDFF->dump();
++  });
++
++  BitVector &TmpIn = this->getAntExpDFF()->getIn();
++  LLVM_DEBUG({ dbgs() << "NAI::dumpAntExp : InSet \n"; });
++  if (TmpIn.any()) {
++    for (unsigned I = 0; I < TmpIn.size(); I++) {
++      if (TmpIn[I]) {
++        Instruction *Inst = II.at(I);
++        LLVM_DEBUG({
++          dbgs() << "Expr : ";
++          Inst->dump();
++        });
++      }
++    }
++  } else {
++    LLVM_DEBUG(dbgs() << "Inset is empty\n");
++  }
++
++  BitVector &TmpOut = this->getAntExpDFF()->getOut();
++  LLVM_DEBUG({ dbgs() << "NAI::dumpAntExp : OutSet \n"; });
++  if (TmpOut.any()) {
++    for (unsigned I = 0; I < TmpOut.size(); I++) {
++      if (TmpOut[I]) {
++        Instruction *Inst = II.at(I);
++        LLVM_DEBUG({
++          dbgs() << "Expr : ";
++          Inst->dump();
++        });
++      }
++    }
++  } else {
++    LLVM_DEBUG(dbgs() << "Outset is empty\n");
++  }
++
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "NAI::dumpAntExp - END\n";);
++#endif
++}
++
++void NodeAnalysisInfo::dumpAvailExp(std::map<int, Instruction *> &II) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "NAI::dumpAvailExp - BEGIN\n");
++#endif
++  LLVM_DEBUG({
++    dbgs() << "NAI::dumpAvailExp : IsEntry " << this->IsEntry << "\n"
++           << "NAI::dumpAvailExp : IsExit " << this->IsExit << "\n";
++    /*            << "NAI::dumpAvailExp : BasicBlock ";
++        this->BB->dump(); */
++    // this->AvailExpDFF->dump();
++  });
++
++  BitVector &TmpIn = this->getAvailExpDFF()->getIn();
++  LLVM_DEBUG({
++    /* dbgs() << "Available Expressions at BB \n"; */
++    dbgs() << "NAI::dumpAvailExp : InSet \n";
++  });
++  if (TmpIn.any()) {
++    for (unsigned I = 0; I < TmpIn.size(); I++) {
++      if (TmpIn[I]) {
++        Instruction *Inst = II.at(I);
++        LLVM_DEBUG({
++          dbgs() << "Expr : ";
++          Inst->dump();
++        });
++      }
++    }
++  } else {
++    LLVM_DEBUG(dbgs() << "Inset is empty\n");
++  }
++
++  BitVector &TmpOut = this->getAvailExpDFF()->getOut();
++  LLVM_DEBUG({ dbgs() << "NAI::dumpAvailExp : OutSet \n"; });
++  if (TmpOut.any()) {
++    for (unsigned I = 0; I < TmpOut.size(); I++) {
++      if (TmpOut[I]) {
++        Instruction *Inst = II.at(I);
++        LLVM_DEBUG({
++          dbgs() << "Expr : ";
++          Inst->dump();
++        });
++      }
++    }
++  } else {
++    LLVM_DEBUG(dbgs() << "Outset is empty\n");
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "NAI::dumpAvailExp - END\n";);
++#endif
++}
++
++void NodeAnalysisInfo::dumpEarlPlac(std::map<int, Instruction *> &II) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "NAI::dumpEarlPlac - BEGIN\n");
++#endif
++  LLVM_DEBUG({
++    dbgs() << "NAI::dump : IsEntry " << this->IsEntry << "\n"
++           << "NAI::dump : IsExit " << this->IsExit << "\n";
++    /*            << "NAI::dump : BasicBlock ";
++        this->BB->dump(); */
++    // this->EarliestDFF->dump();
++  });
++
++  BitVector &TmpS = this->getEarliestDFF()->getS();
++  LLVM_DEBUG({ dbgs() << "NAI::dumpEarlPlac : State \n"; });
++  if (TmpS.any()) {
++    for (unsigned I = 0; I < TmpS.size(); I++) {
++      if (TmpS[I]) {
++        Instruction *Inst = II.at(I);
++        LLVM_DEBUG({
++          dbgs() << "Expr : ";
++          Inst->dump();
++        });
++      }
++    }
++  } else {
++    LLVM_DEBUG(dbgs() << "State is empty\n");
++  }
++
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "NAI::dumpEarlPlac - END\n";);
++#endif
++}
++
++NodeAnalysisInfo::~NodeAnalysisInfo() {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "NAI::Destructor - Begin\n";);
++#endif
++  delete this->AntExpDFF;
++  delete this->AvailExpDFF;
++  delete this->EarliestDFF;
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "NAI::Destructor - END\n";);
++#endif
++}
++
++Exp ::Exp(BasicBlock &BB, Instruction &I) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "Exp::Exp - BEGIN\n");
++#endif
++  this->Inst = &I;
++  this->BB = &BB;
++  if (checkExprForCM(I)) {
++    IgnoreCM = false;
++  }
++  this->Uses.resize(BB.getParent()->getInstructionCount());
++  Opcode = I.getOpcode();
++
++  for (Value *Operand : I.operands()) {
++    Operands.push_back(Operand);
++  }
++
++  // assume that operands are <= 10
++  Arity = Operands.size();
++
++#ifdef INFO
++  LLVM_DEBUG({
++    dbgs() << " The sorted Operands for : \n";
++    I.dump();
++  });
++  for (auto *Operand : Operands) {
++    LLVM_DEBUG(dbgs() << " The Operand is : " << *Operand << "\n");
++  }
++#endif
++
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "Exp::Exp - END\n");
++#endif
++}
++
++bool Exp::checkExprForCM(Instruction &I) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "Exp::checkExpForCM - BEGIN \n");
++#endif
++  bool Ret;
++  if (isa<LoadInst>(I) || isa<StoreInst>(I) || isa<PHINode>(I) ||
++      I.isTerminator()) {
++    Ret = false;
++#ifdef INFO
++    LLVM_DEBUG({
++      dbgs() << "The instruction not considered for CM";
++      I.dump();
++    });
++#endif
++  } else {
++    Ret = true;
++#ifdef INFO
++    LLVM_DEBUG({
++      dbgs() << "The instruction considered for CM";
++      I.dump();
++    });
++#endif
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "Exp::checkExpForCM - END \n");
++#endif
++  return Ret;
++}
++
++bool Exp::isEqual(Exp Eb, const BitVector &Related,
++                  std::map<Instruction *, int> &IE) {
++/* #define RELATED */
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "Exp::isEqual - BEGIN \n");
++#endif
++  bool Status = true;
++#ifdef RELATED
++  LLVM_DEBUG({
++    dbgs() << "base Operands : " << this->Operands.size() << "\n"
++           << "arg Operands : " << Eb.Operands.size() << "\n";
++  });
++#endif
++
++  auto CheckRelated = [&](Value *A, Value *B) {
++    Instruction *InstA = dyn_cast<Instruction>(A);
++    Instruction *InstB = dyn_cast<Instruction>(B);
++
++    if (!InstA || !InstB)
++      return false;
++
++    if (!InstA->isSameOperationAs(InstB)) {
++      return false;
++    }
++#ifdef RELATED
++    LLVM_DEBUG({
++      dbgs() << "Checking Related for \n";
++      InstA->dump();
++      InstB->dump();
++    });
++#endif
++
++    if (!checkExprForCM(*InstA) || !checkExprForCM(*InstB))
++      return false;
++
++    int IndexA = IE.at(InstA);
++    int IndexB = IE.at(InstB);
++
++    if (Related.test(IndexA) && Related.test(IndexB)) {
++#ifdef RELATED
++      LLVM_DEBUG({ dbgs() << "Are Related\n"; });
++#endif
++      return true;
++    }
++#ifdef RELATED
++    LLVM_DEBUG({ dbgs() << "Are Not Related \n"; });
++#endif
++    return false;
++  };
++
++  if (this->Opcode != Eb.Opcode) {
++#ifdef RELATED
++    LLVM_DEBUG({ dbgs() << "The Opcodes are not equal \n"; });
++#endif
++
++    Status &= false;
++  }
++
++  if (this->Arity != Eb.Arity) {
++#ifdef RELATED
++    LLVM_DEBUG({ dbgs() << "The Arity are not equal \n"; });
++#endif
++
++    Status &= false;
++  }
++
++  if ((this->Arity > 2) || (this->isIgnored() || Eb.isIgnored())) {
++#ifdef RELATED
++    LLVM_DEBUG({ dbgs() << "Cannot be hoisted \n"; });
++#endif
++
++    Status &= false;
++  }
++
++  if (Status) {
++    if (this->Arity == 0) {
++#ifdef RELATED
++      LLVM_DEBUG({ dbgs() << "The Operands are equal \n"; });
++#endif
++      Status &= true;
++    } else if (this->Arity == 1) {
++#ifdef RELATED
++      LLVM_DEBUG({
++        dbgs() << "Operands this :";
++        this->Operands[0]->dump();
++        dbgs() << "Operands Exp :";
++        Eb.Operands[0]->dump();
++      });
++#endif
++      if (this->Operands[0] == Eb.Operands[0] ||
++          CheckRelated(this->Operands[0], Eb.Operands[0])) {
++#ifdef RELATED
++        LLVM_DEBUG({ dbgs() << "The Operands are equal \n"; });
++#endif
++        Status &= true;
++      } else {
++#ifdef RELATED
++        LLVM_DEBUG({ dbgs() << "The Operands are equal \n"; });
++#endif
++        Status &= false;
++      }
++    } else { // 2 operands
++#ifdef RELATED
++      LLVM_DEBUG({
++        dbgs() << "Operands this :";
++        this->Operands[0]->dump();
++        dbgs() << "Operands Exp :";
++        Eb.Operands[0]->dump();
++        dbgs() << "Operands this :";
++        this->Operands[1]->dump();
++        dbgs() << "Operands Exp :";
++        Eb.Operands[1]->dump();
++      });
++#endif
++      if (this->Operands[0] == Eb.Operands[0] ||
++          CheckRelated(this->Operands[0], Eb.Operands[0])) {
++#ifdef RELATED
++        LLVM_DEBUG({ dbgs() << "The Operands are equal \n"; });
++#endif
++        Status &= true;
++      } else if (this->Operands[0] == Eb.Operands[1] ||
++                 CheckRelated(this->Operands[0], Eb.Operands[1])) {
++#ifdef RELATED
++        LLVM_DEBUG({ dbgs() << "The Operands are equal \n"; });
++#endif
++        Status &= true;
++      } else {
++#ifdef RELATED
++        LLVM_DEBUG({ dbgs() << "The Operands are not equal \n"; });
++#endif
++        Status &= false;
++      }
++
++      if (Status) {
++        if (this->Operands[1] == Eb.Operands[1] ||
++            CheckRelated(this->Operands[1], Eb.Operands[1])) {
++#ifdef RELATED
++          LLVM_DEBUG({ dbgs() << "The Operands are equal \n"; });
++#endif
++          Status &= true;
++        } else if (this->Operands[1] == Eb.Operands[0] ||
++                   CheckRelated(this->Operands[1], Eb.Operands[0])) {
++#ifdef RELATED
++          LLVM_DEBUG({ dbgs() << "The Operands are equal \n"; });
++#endif
++          Status &= true;
++        } else {
++#ifdef RELATED
++          LLVM_DEBUG({ dbgs() << "The Operands are not equal \n"; });
++#endif
++          Status &= false;
++        }
++      }
++    }
++  }
++#ifdef RELATED
++  if (Status) {
++    LLVM_DEBUG({
++      dbgs() << "Status : " << Status << " The equal expressions are \n ";
++      this->dump();
++      Eb.dump();
++    });
++  } else {
++    LLVM_DEBUG({
++      dbgs() << "Status : " << Status << " The unequal expressions are \n ";
++      this->dump();
++      Eb.dump();
++    });
++  }
++#endif
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "Exp::isEqual - END \n");
++#endif
++  return Status;
++}
++
++void Exp::dump() {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "Exp::dump - BEGIN \n");
++#endif
++
++  LLVM_DEBUG({
++    dbgs() << "Exp::dump : Inst ";
++    this->Inst->dump();
++    dbgs() << "Exp::dump : IgnoreCM " << this->IgnoreCM << "\n"
++           << "Exp::dump : Opcode " << this->Opcode << "\n"
++           << "Exp::dump : Arity " << this->Arity << "\n\n";
++  });
++
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "Exp::dump - END \n");
++#endif
++}
++
++// build uniform representation for the expressions in the SSA
++void CodeMotionPass::buildExpMap(Function &F) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::buildExpMap - BEGIN \n");
++#endif
++  for (BasicBlock &BB : F) {
++    for (Instruction &I : BB) {
++      Exp *Expr = new Exp(BB, I);
++      Inst2Expr.insert(std::make_pair(&I, Expr));
++    }
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::buildExpMap - END \n");
++#endif
++}
++
++// looking for similarity of instructions with two operands
++void CodeMotionPass::buildRelatedExpr(Function &F) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::buildRelatedExpr - BEGIN \n");
++#endif
++#ifdef RELATED
++  unsigned FPIters = 0;
++#endif
++  bool Changed = true;
++  this->RelatedI.resize(F.getInstructionCount());
++  unsigned RelatedExprs = 0;
++  while (Changed) {
++#ifdef RELATED
++    FPIters++;
++#endif
++    Changed = false;
++    for (auto EntryA : this->Inst2Expr) {
++      for (auto EntryB : this->Inst2Expr) {
++        // related is irreflexive
++#ifdef RELATED
++        if (EntryA.first == EntryB.first) {
++          LLVM_DEBUG(dbgs() << "Same Instructions \n");
++          EntryA.first->dump();
++          EntryB.first->dump();
++        }
++#endif
++
++#ifdef RELATED
++        LLVM_DEBUG({
++          dbgs() << "Comparing Instructions \n";
++          EntryA.first->dump();
++          EntryB.first->dump();
++        });
++#endif
++        if (EntryA.first != EntryB.first) {
++          int IndexA = IE.at(EntryA.first);
++          int IndexB = IE.at(EntryB.first);
++          bool Status = EntryA.second->isEqual(*(EntryB.second), this->RelatedI,
++                                               this->IE);
++          if (Status) {
++            this->RelatedI.set(IndexA);
++            this->RelatedI.set(IndexB);
++
++            auto AddToRelatedSet = [&](int IndexA, int IndexB) {
++              if (this->RS.empty()) {
++                SetVector<int> Set;
++                Set.insert(IndexA);
++                Set.insert(IndexB);
++                this->RS.push_back(Set);
++#ifdef RELATED
++                LLVM_DEBUG({
++                  dbgs() << "RS Empty : Inserted instructions in the same set";
++                  II.at(IndexA)->dump();
++                  II.at(IndexB)->dump();
++                  dbgs() << " Set Size : " << Set.size();
++                });
++#endif
++              } else {
++                for (auto &Set : this->RS) {
++                  if (Set.contains(IndexA) || Set.contains(IndexB)) {
++                    Set.insert(IndexA);
++                    Set.insert(IndexB);
++#ifdef RELATED
++                    LLVM_DEBUG({
++                      dbgs() << "Set Existed : Inserted instructions in the "
++                                "same set";
++                      II.at(IndexA)->dump();
++                      II.at(IndexB)->dump();
++                      dbgs() << " Set Size : " << Set.size();
++                    });
++                    return;
++#endif
++                  }
++                }
++#ifdef RELATED
++                LLVM_DEBUG({
++                  dbgs() << "New Set: Inserted instructions in the same set";
++                  II.at(IndexA)->dump();
++                  II.at(IndexB)->dump();
++                });
++#endif
++                SetVector<int> Set;
++                Set.insert(IndexA);
++                Set.insert(IndexB);
++                this->RS.push_back(Set);
++              }
++            };
++            AddToRelatedSet(IndexA, IndexB);
++            this->RI.insert(std::make_pair(IndexA, IndexB));
++#ifdef RELATED
++            LLVM_DEBUG({
++              dbgs() << "IndexA : " << IndexA << " IndexB : " << IndexB
++                     << " Inst2Expr size : " << Inst2Expr.size() << "\n";
++            });
++#endif
++          }
++        }
++      }
++    }
++    if (RelatedExprs != this->RelatedI.count()) {
++#ifdef RELATED
++      LLVM_DEBUG({
++        dbgs() << "\nRelatedExprs : " << RelatedExprs
++               << "\nRelations Count : " << RI.size();
++      });
++#endif
++      Changed = true;
++      RelatedExprs = this->RelatedI.count();
++    } else {
++      Changed = false;
++    }
++  }
++#ifdef RELATED
++  LLVM_DEBUG({ dbgs() << "\nRelatedExprs #Iterations : " << FPIters; });
++#endif
++
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::buildRelatedExpr - END \n");
++#endif
++}
++
++/*
++ * builds the Inst2Exp, BBInfo, BBE maps
++ */
++void CodeMotionPass::buildCFGData(Function &F) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::initCFGState - BEGIN \n");
++#endif
++  int I = 0;
++
++  for (BasicBlock &BB : F) {
++#ifdef INFO
++    LLVM_DEBUG({
++      dbgs() << "initCFGState - The basic block ";
++      BB.dump();
++    });
++#endif
++
++    NodeAnalysisInfo *BBNAI = new NodeAnalysisInfo(F, BB);
++    this->BBInfo.insert(std::make_pair(&BB, BBNAI));
++
++    auto BuildInstState = [&]() {
++      for (Instruction &Inst : BB) {
++        this->II.insert_or_assign(I, &Inst);
++        this->IE.insert_or_assign(&Inst, I);
++        NodeAnalysisInfo *InstNAI = new NodeAnalysisInfo(F, Inst);
++        InstNAI->setExp(Inst2Expr.at(&Inst));
++        this->InstInfo.insert(std::make_pair(&Inst, InstNAI));
++        I++;
++      }
++    };
++    BuildInstState();
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::initCFGState - END \n");
++#endif
++}
++
++void CodeMotionPass::initCFGNodeState(Function &F) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::initNodeState - BEGIN \n");
++#endif
++  for (auto &BB : F) {
++    NodeAnalysisInfo *BBNAI = BBInfo.at(&BB);
++    BBNAI->getAntExpDFF()->initState();
++    // entry and exit are not dummy nodes in IR
++    if (BBNAI->getIsExit()) {
++      BBNAI->getAntExpDFF()->getOut().flip();
++    }
++    BBNAI->getAvailExpDFF()->initState();
++    if (BBNAI->getIsEntry()) {
++      BBNAI->getAvailExpDFF()->getIn().flip();
++    }
++  }
++
++  for (auto Entry : this->Inst2Expr) {
++    for (auto &Use : Entry.first->uses()) {
++      Instruction *I = dyn_cast<Instruction>(Use.getUser());
++      int Index = this->IE.at(I);
++      Entry.second->getUses().set(Index);
++    }
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::initNodeState - END \n");
++#endif
++}
++
++// backward flow analysis
++void CodeMotionPass ::performAntExpDfa(Function &F) {
++/* #define ANTEXP */
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::performAntExpDfa - BEGIN\n");
++#endif
++#ifdef ANTEXP
++  int FPIters = 0;
++#endif
++  bool Changed = true;
++  while (Changed) {
++#ifdef ANTEXP
++    ++FPIters;
++#endif
++    Changed = false;
++    for (auto &BB : F) {
++      NodeAnalysisInfo *BBNAI = BBInfo.at(&BB);
++
++#ifdef ANTEXP
++      LLVM_DEBUG({
++        dbgs() << "CMP::performAntExpDfa : NodeAnalysisInfo \nEntry : "
++               << BBNAI->getIsEntry() << "\nExit : " << BBNAI->getIsExit()
++               << "\n";
++        dbgs() << "CMP::performAntExpDfa : BB : ";
++        BB.dump();
++      });
++#endif
++
++      const unsigned BVSize = F.getInstructionCount();
++
++      BitVector BBIn(BVSize), BBOut(BVSize), BBJoin(BVSize);
++
++      int NSucc = BB.back().getNumSuccessors();
++      if (NSucc > 0) {
++        BBJoin.set();
++        for (int I = 0; I < NSucc; I++) {
++          // join of the ins of the successor nodes
++          BasicBlock *SBB = BB.back().getSuccessor(I);
++          NodeAnalysisInfo *SAI = this->BBInfo.at(SBB);
++          BitVector TmpIn = SAI->getAntExpDFF()->getIn();
++#ifdef ANTEXP
++          LLVM_DEBUG({
++            dbgs() << "During Join : \n"
++                   << "Join \n";
++            dumpBitVector(BBJoin);
++            dbgs() << "TmpIn \n";
++            dumpBitVector(TmpIn);
++          });
++#endif
++          retainRelatedExpr(BBJoin, TmpIn);
++          BBJoin &= TmpIn;
++        }
++      }
++
++      BBOut = BBJoin;
++#ifdef ANTEXP
++      LLVM_DEBUG({
++        dbgs() << "BEFORE : \n"
++               << "Join \n";
++        dumpBitVector(BBJoin);
++        dbgs() << "Related \n";
++        dumpBitVector(RelatedI);
++        dbgs() << "BBIn \n";
++        dumpBitVector(BBIn);
++        dbgs() << "BBOut \n";
++        dumpBitVector(BBOut);
++      });
++#endif
++      BitVector PresIIn(BVSize), PresIOut(BVSize), PrevIIn(BVSize),
++          PrevIOut(BVSize);
++      auto UpdateInstDFF = [&]() {
++        for (auto I = BB.rbegin(); I != BB.rend(); I++) {
++          Instruction &Inst = *I;
++          Exp *Expr = Inst2Expr.at(&Inst);
++
++#ifdef ANTEXP
++          LLVM_DEBUG({
++            dbgs() << "Ignored : " << Expr->isIgnored() << "\n";
++            dbgs() << "Instruction : ";
++            I->dump();
++          });
++#endif
++
++          // I.in := \x -> (I.use U x)I.out
++          int Index = this->IE.at(&Inst);
++          PresIOut = PrevIIn;
++          // killing exprs using this expr
++          PresIOut.reset(Expr->getUses());
++          PresIOut.set(Index);
++          PresIIn = PresIOut;
++
++          PrevIIn = PresIIn;
++          PrevIOut = PresIOut;
++          this->InstInfo.at(&Inst)->getAntExpDFF()->getIn() = PresIIn;
++          this->InstInfo.at(&Inst)->getAntExpDFF()->getOut() = PresIOut;
++        }
++      };
++
++      PrevIIn = BBOut;
++      UpdateInstDFF();
++      BBIn = PresIIn;
++
++#ifdef ANTEXP
++      LLVM_DEBUG({
++        dbgs() << "AFTER : \n"
++               << "BBIn \n";
++        dumpBitVector(BBIn);
++        dbgs() << "BBOut \n";
++        dumpBitVector(BBOut);
++      });
++#endif
++
++      if (BBOut != BBNAI->getAntExpDFF()->getOut() ||
++          BBIn != BBNAI->getAntExpDFF()->getIn()) {
++#ifdef ANTEXP
++        LLVM_DEBUG(dbgs() << "State Changed\n");
++#endif
++        Changed |= true;
++      }
++      BBNAI->getAntExpDFF()->getOut() = BBOut;
++      BBNAI->getAntExpDFF()->getIn() = BBIn;
++    }
++  }
++#ifdef ANTEXP
++  LLVM_DEBUG(dbgs() << "CMP::performAntExpDfa #Iterations : " << FPIters
++                    << "\n");
++#endif
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::performAntExpDfa - END\n");
++#endif
++}
++
++// forward flow analysis
++void CodeMotionPass::performAvailExpDfa(Function &F) {
++/* #define AVAILEXP */
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::performAvailExpDfa - BEGIN\n");
++#endif
++#ifdef AVAILEXP
++  int FPIters = 0;
++#endif
++  bool Changed = true;
++  while (Changed) {
++#ifdef AVAILEXP
++    ++FPIters;
++#endif
++    Changed = false;
++    for (auto &BB : F) {
++      NodeAnalysisInfo *BBNAI = BBInfo.at(&BB);
++
++#ifdef AVAILEXP
++      LLVM_DEBUG({
++        dbgs() << "CMP::performAvailExpDfa : NodeAnalysisInfo \nEntry :"
++               << BBNAI->getIsEntry() << "\nExit : " << BBNAI->getIsExit()
++               << "\n";
++        dbgs() << "CMP::performAvailExpDfa : BB : ";
++        BB.dump();
++      });
++#endif
++      const unsigned BVSize = F.getInstructionCount();
++
++      BitVector BBIn(BVSize), BBOut(BVSize), BBJoin(BVSize);
++
++      if (!pred_empty(&BB)) {
++        BBJoin.set();
++        for (auto It = pred_begin(&BB), Et = pred_end(&BB); It != Et; ++It) {
++          // join of the outs of the predecessor nodes
++          BasicBlock *PBB = *It;
++          NodeAnalysisInfo *PAI = this->BBInfo.at(PBB);
++          BitVector TmpOut = PAI->getAvailExpDFF()->getOut();
++#ifdef AVAILEXP
++          LLVM_DEBUG({
++            dbgs() << "During Join : \n"
++                   << "Join \n";
++            dumpBitVector(BBJoin);
++            dbgs() << "TmpIn \n";
++            dumpBitVector(TmpOut);
++          });
++#endif
++          retainRelatedExpr(BBJoin, TmpOut);
++          BBJoin &= TmpOut;
++        }
++      }
++
++      BBIn = BBJoin;
++#ifdef AVAILEXP
++      LLVM_DEBUG({
++        dbgs() << "BEFORE : \n"
++               << "Join \n";
++        dumpBitVector(BBJoin);
++        dbgs() << "Related \n";
++        dumpBitVector(RelatedI);
++        dbgs() << "BBIn \n";
++        dumpBitVector(BBIn);
++        dbgs() << "BBOut \n";
++        dumpBitVector(BBOut);
++      });
++#endif
++      BitVector PresIIn(BVSize), PresIOut(BVSize), PrevIIn(BVSize),
++          PrevIOut(BVSize);
++      auto UpdateInstDFF = [&]() {
++        for (auto I = BB.begin(); I != BB.end(); I++) {
++          Instruction &Inst = *I;
++          NodeAnalysisInfo *InstNAI = InstInfo.at(&Inst);
++
++#ifdef AVAILEXP
++          LLVM_DEBUG({
++            dbgs() << "Ignored : " << Expr->isIgnored() << "\n";
++            dbgs() << "Instruction : ";
++            I->dump();
++          });
++#endif
++
++          // BB.out := \x -> (BB[ant].in U x)BB.in
++          PresIIn = PrevIOut;
++          PresIIn |= InstNAI->getAntExpDFF()->getIn();
++          // PresIIn.reset(Expr->getUses());
++          PresIOut = PresIIn;
++
++#ifdef AVAILEXP
++          LLVM_DEBUG({
++            dbgs() << "=====================\n\n"
++                   << "During Exp : \n"
++                   << "PresIIn \n";
++            dumpBitVector(PresIIn);
++            dbgs() << "PresIOut \n";
++            dumpBitVector(PresIOut);
++            dbgs() << "PrevIIn \n";
++            dumpBitVector(PrevIIn);
++            dbgs() << "PrevIOut \n";
++            dumpBitVector(PrevIOut);
++            dbgs() << "AntExpIn \n";
++            dumpBitVector(InstNAI->getAntExpDFF()->getIn());
++            dbgs() << "=====================\n\n";
++          });
++#endif
++          PrevIIn = PresIIn;
++          PrevIOut = PresIOut;
++          this->InstInfo.at(&Inst)->getAvailExpDFF()->getIn() = PresIIn;
++          this->InstInfo.at(&Inst)->getAvailExpDFF()->getOut() = PresIOut;
++        }
++      };
++
++      PrevIOut = BBIn;
++      UpdateInstDFF();
++      BBOut = PresIOut;
++
++#ifdef AVAILEXP
++      LLVM_DEBUG({
++        dbgs() << "AFTER : \n"
++               << "BBIn \n";
++        dumpBitVector(BBIn);
++        dbgs() << "BBOut \n";
++        dumpBitVector(BBOut);
++      });
++#endif
++
++      if (BBIn != BBNAI->getAvailExpDFF()->getIn() ||
++          BBOut != BBNAI->getAvailExpDFF()->getOut()) {
++#ifdef AVAILEXP
++        LLVM_DEBUG(dbgs() << "State Changed\n");
++#endif
++        Changed |= true;
++      }
++      BBNAI->getAvailExpDFF()->getOut() = BBOut;
++      BBNAI->getAvailExpDFF()->getIn() = BBIn;
++    }
++  }
++#ifdef INFO
++  LLVM_DEBUG(dbgs() << "CMP::performAvailExpDfa #Iterations : " << FPIters
++                    << "\n");
++#endif
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::performAvailExpDfa - END\n");
++#endif
++}
++
++void CodeMotionPass::performEarlPlacDfa(Function &F) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::performEarlPlac - BEGIN\n");
++#endif
++  for (auto &BB : F) {
++    NodeAnalysisInfo *BBNAI = BBInfo.at(&BB);
++
++    const unsigned BVSize = F.getInstructionCount();
++
++    BitVector BBState(BVSize);
++#ifdef EARL
++    LLVM_DEBUG({
++      dbgs() << "BasicBlock \n";
++      BB.dump();
++    });
++#endif
++
++#ifdef EARL
++    LLVM_DEBUG({
++      dbgs() << "BEFORE : \n"
++             << "State \n";
++      dumpBitVector(BBState);
++    });
++#endif
++
++    BitVector InstState(BVSize);
++    auto UpdateInstState = [&]() {
++      for (auto I = BB.begin(); I != BB.end(); I++) {
++        Instruction &Inst = *I;
++        NodeAnalysisInfo *InstNAI = InstInfo.at(&Inst);
++        InstState = InstNAI->getAntExpDFF()->getIn();
++        InstState.reset(
++            InstNAI->getAvailExpDFF()->getIn()); // antexp - availexpt
++        InstNAI->getEarliestDFF()->getS() = InstState;
++      }
++    };
++
++    UpdateInstState();
++
++    BBState = BBNAI->getAntExpDFF()->getIn();
++    BBState.reset(BBNAI->getAvailExpDFF()->getIn()); // antexp - availexpt
++    BBNAI->getEarliestDFF()->getS() = BBState;
++
++#ifdef EARL
++    LLVM_DEBUG({
++      dbgs() << "AFTER : \n"
++             << "State \n";
++      dumpBitVector(BBState);
++    });
++#endif
++  }
++
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::performEarlPlac - END\n");
++#endif
++}
++
++void CodeMotionPass::performCodeMotion(Function &F) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::performCodeMotion - BEGIN\n");
++#endif
++
++  std::map<int, Value *> OldNewInst;
++
++  // inserting statements for each basic block
++  for (auto &BB : F) {
++    NodeAnalysisInfo *BBNAI = BBInfo.at(&BB);
++    BitVector Inst4CM = BBNAI->getEarliestDFF()->getS();
++
++    /*https://releases.llvm.org/2.6/docs/tutorial/JITTutorial1.html*/
++    IRBuilder<> IB(&BB);
++
++    auto GetRelatedInstructions = [&](int Index) -> SetVector<int> {
++      for (auto Set : this->RS) {
++        if (Set.contains(Index)) {
++          return Set;
++        }
++      }
++      SetVector<int> EmptySet;
++      return EmptySet;
++    };
++
++    auto Iter = BB.getFirstInsertionPt();
++    for (unsigned Index = 0; Index < Inst4CM.size(); Index++) {
++      if (Inst4CM[Index]) {
++        Instruction *Inst = this->II.at(Index);
++        SetVector<int> RelInstSet = GetRelatedInstructions(Index);
++        Exp *Expr = this->Inst2Expr.at(Inst);
++        if (!Expr->isIgnored()) {
++          IB.SetInsertPoint(&BB, Iter);
++          Value *Clone = IB.Insert(Inst->clone());
++#ifdef CM
++          LLVM_DEBUG({
++            dbgs() << "Inserting the instruction";
++            Clone->dump();
++          });
++#endif
++          if (RelInstSet.empty()) {
++            OldNewInst.insert(std::make_pair(this->IE.at(Inst), Clone));
++          } else {
++            for (unsigned RelatedIndex : RelInstSet) {
++              if (RelatedIndex != Index) {
++                Instruction *RelInst = this->II.at(RelatedIndex);
++                Inst4CM.reset(RelatedIndex);
++                OldNewInst.insert(std::make_pair(this->IE.at(Inst), Clone));
++                OldNewInst.insert(std::make_pair(this->IE.at(RelInst), Clone));
++#ifdef CM
++                LLVM_DEBUG({
++                  dbgs() << "Instruction : \n";
++                  Inst->dump();
++                  dbgs() << "Related Instruction : \n";
++                  RelInst->dump();
++                  dbgs() << "Clone : \n";
++                  Clone->dump();
++                });
++#endif
++              }
++            }
++          }
++        }
++      }
++    }
++  }
++
++#ifdef CM
++  LLVM_DEBUG(
++      { dbgs() << "Replacement Instr Size : " << OldNewInst.size() << "\n"; });
++#endif
++
++  // Replacing the instructions
++
++  ReversePostOrderTraversal<Function *> RPOT(&F);
++  for (ReversePostOrderTraversal<Function *>::rpo_iterator RI = RPOT.begin(),
++                                                           RE = RPOT.end();
++       RI != RE; ++RI) {
++    BasicBlock *BB = *RI;
++
++#ifdef CM
++    LLVM_DEBUG({
++      dbgs() << "Visiting BB";
++      BB->dump();
++    });
++#endif
++
++    for (auto Iter = BB->begin(); Iter != BB->end();) {
++      Instruction &Inst = *Iter;
++      Iter++;
++      BasicBlock::iterator BBIt(Inst);
++#ifdef CM
++      LLVM_DEBUG({
++        dbgs() << "Present Instruction for replacement : ";
++        Inst.dump();
++      });
++#endif
++
++      if (this->IE.find(&Inst) == this->IE.end()) {
++#ifdef CM
++        LLVM_DEBUG({
++          dbgs() << "Instruction for replacement not found : ";
++          Inst.dump();
++        });
++#endif
++        continue;
++      }
++      int Index = this->IE.at(&Inst);
++      if (OldNewInst.find(Index) == OldNewInst.end()) {
++#ifdef CM
++        LLVM_DEBUG({
++          dbgs() << "Instruction should not be replaced : ";
++          Inst.dump();
++        });
++#endif
++        continue;
++      }
++
++      Value *Replacement = OldNewInst.at(Index);
++      if (Replacement == &Inst) {
++#ifdef CM
++        LLVM_DEBUG({
++          dbgs() << "Skip Replacing Instruction : ";
++          Inst.dump();
++        });
++#endif
++        continue;
++      }
++#ifdef CM
++      LLVM_DEBUG({
++        dbgs() << "Replacing Instruction : ";
++        Inst.dump();
++        dbgs() << "With : ";
++        Replacement->dump();
++        dbgs() << "Before : ";
++        F.dump();
++      });
++#endif
++      ReplaceInstWithValue(BBIt, Replacement);
++      // F.dump();
++    }
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::performCodeMotion - END\n");
++#endif
++}
++
++void CodeMotionPass::retainRelatedExpr(BitVector &A, BitVector &B) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::retainRelatedExpr - BEGIN\n");
++#endif
++
++#ifdef RELATEDEXP
++  LLVM_DEBUG({
++    dbgs() << "CMP::retainRelatedExpr A size : " << A.size() << "\n"
++           << "B size : " << B.size() << "\n";
++  });
++#endif
++
++  for (unsigned I = 0; I < A.size(); I++) {
++    for (unsigned J = 0; J < B.size(); J++) {
++      if (I == J) {
++        continue;
++      }
++      if (this->RelatedI.test(I) && this->RelatedI.test(J) && A.test(I) &&
++          B.test(J)) {
++        A.set(J);
++        B.set(I);
++      }
++    }
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::retainRelatedExpr - END\n");
++#endif
++}
++
++void CodeMotionPass::dumpBBInfoMap() {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpBBInfoMap - BEGIN \n");
++#endif
++  for (auto Entry : BBInfo) {
++    LLVM_DEBUG({
++      dbgs() << "\nBasic Block : ";
++      Entry.first->dump();
++      dbgs() << "NAI : AntExp\n";
++      Entry.second->dumpAntExp(this->II);
++      dbgs() << "NAI : AvailExp\n";
++      Entry.second->dumpAvailExp(this->II);
++      dbgs() << "NAI : Earliest\n";
++      Entry.second->dumpEarlPlac(this->II);
++      dbgs() << "NAI : PostExp\n";
++      Entry.second->dumpPostExp(this->II);
++    });
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpBBInfoMap - BEGIN \n");
++#endif
++}
++
++void CodeMotionPass::dumpInstInfoMap() {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpInstInfoMap - BEGIN \n");
++#endif
++  for (auto Entry : InstInfo) {
++    LLVM_DEBUG({
++      dbgs() << "\nInstruction : ";
++      Entry.first->dump();
++      dbgs() << "NAI : AntExp\n";
++      Entry.second->dumpAntExp(this->II);
++      dbgs() << "NAI : AvailExp\n";
++      Entry.second->dumpAvailExp(this->II);
++      dbgs() << "NAI : Earliest\n";
++      Entry.second->dumpEarlPlac(this->II);
++      dbgs() << "NAI : PostExp\n";
++      Entry.second->dumpPostExp(this->II);
++    });
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpInstInfoMap - END \n");
++#endif
++}
++
++void CodeMotionPass::dumpExprMap() {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpExprMap - BEGIN \n");
++#endif
++  for (auto Entry : Inst2Expr) {
++    LLVM_DEBUG({
++      dbgs() << "\nInstruction : ";
++      Entry.first->dump();
++      dbgs() << "Expression : ";
++      Entry.second->dump();
++    });
++  }
++
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpExprMap - END \n");
++#endif
++}
++
++void CodeMotionPass::dumpIE() {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpIE - BEGIN \n");
++#endif
++  for (auto Entry : IE) {
++    LLVM_DEBUG({
++      dbgs() << "Inst : ";
++      Entry.first->dump();
++      dbgs() << "Index : " << Entry.second << "\n";
++    });
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpIE - END \n");
++#endif
++}
++
++void CodeMotionPass::dumpCFG(Function &F) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpCFG - BEGIN \n");
++#endif
++  LLVM_DEBUG({
++    dbgs() << "The function CFG : ";
++    F.dump();
++  });
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpCFG - END \n");
++#endif
++}
++
++void CodeMotionPass::dumpCFGData(Function &F) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpCFGData - BEGIN \n");
++#endif
++  dumpExprMap();
++  dumpIE();
++  dumpBBInfoMap();
++  dumpInstInfoMap();
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpCFGData - END \n");
++#endif
++}
++
++void CodeMotionPass ::dumpAntExpCFGState() {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpAntExpCFGState - BEGIN \n");
++#endif
++  // dump BB and NodeAnalysisInfo
++  for (auto Entry : this->BBInfo) {
++    LLVM_DEBUG({
++      dbgs() << "==================\n"
++             << "BasicBlock :";
++      Entry.first->dump();
++      dbgs() << "NAI : \n";
++      Entry.second->dumpAntExp(this->II);
++      dbgs() << "==================\n";
++    });
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpAntExpCFGState - END \n");
++#endif
++}
++
++void CodeMotionPass ::dumpAvailExpCFGState() {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpAvailExpCFGState - BEGIN \n");
++#endif
++  // dump BB and NodeAnalysisInfo
++  for (auto Entry : this->BBInfo) {
++    LLVM_DEBUG({
++      dbgs() << "==================\n"
++             << "BasicBlock :";
++      Entry.first->dump();
++      dbgs() << "NAI : \n";
++      Entry.second->dumpAvailExp(this->II);
++      dbgs() << "==================\n";
++    });
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpAvailExpCFGState - END \n");
++#endif
++}
++
++void CodeMotionPass::dumpEarlPlacCFGState() {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpEarlPlacCFGState - BEGIN \n");
++#endif
++  // dump BB and NodeAnalysisInfo
++  for (auto Entry : this->BBInfo) {
++    LLVM_DEBUG({
++      dbgs() << "==================\n"
++             << "BasicBlock :";
++      Entry.first->dump();
++      dbgs() << "NAI : ";
++      Entry.second->dumpEarlPlac(this->II);
++      dbgs() << "==================\n";
++    });
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpEarlPlacCFGState - END \n");
++#endif
++}
++
++void CodeMotionPass ::dumpPostExpCFGState() {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpPostExpCFGState - BEGIN \n");
++#endif
++  // dump BB and NodeAnalysisInfo
++  for (auto Entry : this->BBInfo) {
++    LLVM_DEBUG({
++      dbgs() << "==================\n";
++      dbgs() << "BasicBlock :";
++      Entry.first->dump();
++      dbgs() << "NAI : \n";
++      Entry.second->dumpPostExp(this->II);
++      dbgs() << "==================\n";
++    });
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpPostExpCFGState - END \n");
++#endif
++}
++
++void CodeMotionPass::dumpLatePlacCFGState() {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpLatePlacCFGState - BEGIN \n");
++#endif
++  // dump BB and NodeAnalysisInfo
++  for (auto Entry : this->BBInfo) {
++    LLVM_DEBUG({
++      dbgs() << "==================\n";
++      dbgs() << "BasicBlock :";
++      Entry.first->dump();
++      dbgs() << "NAI : ";
++      Entry.second->dumpLatePlac(this->II);
++      dbgs() << "==================\n";
++    });
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpLatePlacCFGState - END \n");
++#endif
++}
++
++void CodeMotionPass ::dumpUsedExpCFGState() {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpUsedExpCFGState - BEGIN \n");
++#endif
++  // dump BB and NodeAnalysisInfo
++  for (auto Entry : this->BBInfo) {
++    LLVM_DEBUG({
++      dbgs() << "==================\n"
++             << "BasicBlock :";
++      Entry.first->dump();
++      dbgs() << "NAI : ";
++      Entry.second->dumpUsedExp(this->II);
++      dbgs() << "==================\n";
++    });
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpUsedExpCFGState - END \n");
++#endif
++}
++
++void CodeMotionPass::dumpCFGNodeState(Function &F) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpCFGNodeState - BEGIN\n");
++#endif
++  dumpAntExpCFGState();
++  dumpAvailExpCFGState();
++  dumpEarlPlacCFGState();
++  dumpPostExpCFGState();
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpCFGNodeState - END\n");
++#endif
++}
++
++void CodeMotionPass::dumpBitVector(BitVector &B) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpBitVector - BEGIN\n");
++#endif
++
++  if (B.any()) {
++    for (unsigned I = 0; I < B.size(); I++) {
++      if (B[I]) {
++        Instruction *Inst = II.at(I);
++        LLVM_DEBUG({
++          dbgs() << "Expr : ";
++          Inst->dump();
++        });
++      }
++    }
++  } else {
++    LLVM_DEBUG(dbgs() << "Set is empty\n");
++  }
++
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpBitVector - END\n");
++#endif
++}
++
++void CodeMotionPass::dumpRelatedExp(Function &F) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpRelatedExp - BEGIN\n");
++#endif
++  BitVector &Tmp = this->RelatedI;
++  LLVM_DEBUG({
++    dbgs() << "Function " << F.getName() << " #BB : " << F.getInstructionCount()
++           << "\n"
++           << "Related Expressions # " << Tmp.count() << "\n";
++  });
++  if (!Tmp.any()) {
++    LLVM_DEBUG(dbgs() << " No Related expressions in the function \n");
++  } else {
++    for (unsigned I = 0; I < Tmp.size(); I++) {
++      if (Tmp[I]) {
++        Instruction *Inst = II.at(I);
++        LLVM_DEBUG({
++          dbgs() << "Expr : ";
++          Inst->dump();
++        });
++      }
++    }
++  }
++
++  // dumping Relation Sets
++  for (auto Set : this->RS) {
++    LLVM_DEBUG({
++      dbgs() << "Related instructions in the same set of size" << Set.size();
++    });
++    for (auto Index : Set) {
++      LLVM_DEBUG({ II.at(Index)->dump(); });
++    }
++  }
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::dumpRelatedExp - BEGIN\n");
++#endif
++}
++
++void CodeMotionPass::deleteData() {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CME::deleteData - BEGIN \n");
++#endif
++  for (auto Ele : BBInfo) {
++    delete Ele.second;
++  }
++  this->BBInfo.clear();
++  for (auto Ele : BBInfo) {
++    delete Ele.second;
++  }
++  this->InstInfo.clear();
++
++  for (auto Ele : Inst2Expr) {
++    delete Ele.second;
++  }
++  this->Inst2Expr.clear();
++  this->RelatedI.clear();
++  this->IE.clear();
++  this->II.clear();
++  this->Inst4CM.clear();
++  this->RI.clear();
++  this->RS.clear();
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CME::deleteData - END \n");
++#endif
++}
++
++bool CodeMotionPass ::doFunctionPass(Function &F) {
++
++  // #ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::doFunctionPass - BEGIN\n");
++  // #endif
++
++#ifdef INFO
++  LLVM_DEBUG({
++    dbgs() << "Function : " << F.getName() << "\n";
++    F.dump();
++  });
++#endif
++
++  buildExpMap(F);
++#ifdef INFO
++  dumpExprMap();
++  LLVM_DEBUG({
++    dbgs() << "instruction count : " << F.getInstructionCount()
++           << " expr count :  " << Inst2Expr.size() << "\n";
++  });
++#endif
++
++  assert(F.getInstructionCount() == Inst2Expr.size());
++
++  // builds the IE, II, InstrInfo and BBInfo
++  buildCFGData(F);
++
++  buildRelatedExpr(F);
++
++#ifdef INFO
++  LLVM_DEBUG({
++    dbgs() << " Number of BB : " << F.getInstructionCount()
++           << " BBInfo size : " << BBInfo.size() << "\n";
++  });
++#endif
++
++  assert(F.size() == BBInfo.size());
++
++  /* dumpCFGData(F); */
++
++  initCFGNodeState(F);
++  /* dumpCFGNodeState(F); */
++
++  // dumpRelatedExp(F);
++
++  performAntExpDfa(F);
++  dumpAntExpCFGState();
++
++  performAvailExpDfa(F);
++  // dumpAvailExpCFGState();
++
++  performEarlPlacDfa(F);
++  // dumpEarlPlacCFGState();
++
++  performCodeMotion(F);
++
++  deleteData();
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::doFunctionPass - END\n");
++#endif
++  return true;
++}
++
++bool CodeMotionPass::runOnFunction(Function &F) {
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::runOnFunction - BEGIN\n");
++#endif
++#ifdef PASSDUMP
++  LLVM_DEBUG({
++    dbgs() << "====================\n\n"
++           << "Function Before code Motion \n";
++    F.dump();
++    dbgs() << "====================\n\n";
++  });
++#endif
++
++  doFunctionPass(F);
++
++#ifdef PASSDUMP
++  LLVM_DEBUG({
++    dbgs() << "====================\n\n"
++           << "Module after code Motion \n";
++    F.dump();
++    dbgs() << "====================\n\n";
++  });
++#endif
++
++  return true;
++#ifdef FUNENET
++  LLVM_DEBUG(dbgs() << "CMP::runOnFunction - END\n");
++#endif
++}
++char CodeMotionPass::ID = 0;
++
++RegisterPass<CodeMotionPass> X("hoist-anticipated-expressions",
++                               "Hoist Anticipated Expressions Pass");
++} // namespace llvm
+\ No newline at end of file
+diff --git a/llvm/lib/Transforms/E0255_CM/CMakeLists.txt b/llvm/lib/Transforms/E0255_CM/CMakeLists.txt
+new file mode 100644
+index 000000000000..b5bcb14acf6e
+--- /dev/null
++++ b/llvm/lib/Transforms/E0255_CM/CMakeLists.txt
+@@ -0,0 +1,11 @@
++add_llvm_library( LLVMCM MODULE BUILDTREE_ONLY
++  CM.cpp
++
++  ADDITIONAL_HEADER_DIRS
++  ${LLVM_MAIN_INCLUDE_DIR}/llvm/Transforms/E0255_CM
++
++  DEPENDS
++  intrinsics_gen
++  PLUGIN_TOOL
++  opt
++  )
+\ No newline at end of file
+diff --git a/llvm/lib/Transforms/E0255_CM/README.txt b/llvm/lib/Transforms/E0255_CM/README.txt
+new file mode 100644
+index 000000000000..5fb1eec99000
+--- /dev/null
++++ b/llvm/lib/Transforms/E0255_CM/README.txt
+@@ -0,0 +1,11 @@
++
++Note :
++
++- The test case, @not_anticipated_for_loop, has Check, check next and check next. The add instruction can be reordered with srem.
++
++- I have used the test file shared and i see that the tests pass as expected
++
++- I have implemented anticipated expression analyses and Available analysis and finally computing 
++earliest expressions. The earliest expressions are hoisted.
++
++- This is solely my work without any discussion of any sort with other class mates.
+\ No newline at end of file
+-- 
+2.25.1
+
